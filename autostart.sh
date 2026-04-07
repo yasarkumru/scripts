@@ -10,6 +10,8 @@ fi
 for script in "$REPO_DIR/autostart"/*.sh; do
     if [[ -f "$script" ]]; then
         chmod +x "$script"
-        "$script" &
+        # Run in background, redirect output to null, and disown to prevent blocking logout
+        "$script" >/dev/null 2>&1 &
+        disown
     fi
 done
