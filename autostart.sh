@@ -7,7 +7,7 @@ if [ -d "$REPO_DIR/.git" ]; then
     git -C "$REPO_DIR" pull --quiet || true
 fi
 
-for script in "$REPO_DIR/autostart"/*; do
+for script in "$REPO_DIR/autostart"/*.sh; do
     if [[ -f "$script" ]]; then
         chmod +x "$script"
         "$script" &
