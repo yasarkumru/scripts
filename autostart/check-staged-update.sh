@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 while true; do
     if rpm-ostree status --json | jq -e '.deployments[] | select(.staged == true)' >/dev/null 2>&1; then
