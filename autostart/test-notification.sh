@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-notify-send "Autostart Test" "The autostart script is working correctly!"
+notify-send "Autostart Test" "this is another change to test if it is working!"
