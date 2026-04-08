@@ -23,14 +23,14 @@ while true; do
                 notify-send \
                     -i steam \
                     -a "Steam" \
-                    --hint=string:desktop-entry:com.valvesoftware.Steam \
+                    --hint=string:desktop-entry:steam \
                     "Steam Shaders" \
                     "Building shaders for: $game_name"
             else
                 notify-send \
                     -i steam \
                     -a "Steam" \
-                    --hint=string:desktop-entry:com.valvesoftware.Steam \
+                    --hint=string:desktop-entry:steam \
                     "Steam Shaders" \
                     "Building shaders for AppID: $current_appid"
             fi
