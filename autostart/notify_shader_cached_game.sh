@@ -20,9 +20,19 @@ while true; do
             
             if [ -n "$manifest" ]; then
                 game_name=$(grep -E '"name"\s+' "$manifest" | cut -d\" -f4)
-                notify-send "Steam Shaders" "Building shaders for: $game_name" -i steam
+                notify-send \
+                    -i steam \
+                    -a "Steam" \
+                    --hint=string:desktop-entry:com.valvesoftware.Steam \
+                    "Steam Shaders" \
+                    "Building shaders for: $game_name"
             else
-                notify-send "Steam Shaders" "Building shaders for AppID: $current_appid" -i steam
+                notify-send \
+                    -i steam \
+                    -a "Steam" \
+                    --hint=string:desktop-entry:com.valvesoftware.Steam \
+                    "Steam Shaders" \
+                    "Building shaders for AppID: $current_appid"
             fi
         fi
     else
