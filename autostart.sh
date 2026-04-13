@@ -1,6 +1,6 @@
 #!/bin/bash
 
-REPO_DIR="/var/home/yasar/scripts"
+REPO_DIR="$HOME/scripts"
 
 # Force sync with the remote to avoid merge conflicts from local changes (like chmod)
 if [ -d "$REPO_DIR/.git" ]; then
