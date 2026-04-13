@@ -37,6 +37,14 @@ if [ -n "$FILES_TO_MOVE" ]; then
         -not -path "$HISTORY_DIR" \
         -exec mv {} "$TARGET_DIR/" \;
 
+    # Send a desktop notification that stays in the notification center
+    notify-send \
+        --icon=folder-download \
+        -a "Download Organizer" \
+        --hint=string:desktop-entry:org.kde.dolphin \
+        "Monthly Cleanup Complete" \
+        "Previous month's files moved to history/$PREV_MONTH_NAME"
+
     echo "Previous month's downloads organized into: $TARGET_DIR"
 else
     echo "No files to organize for $PREV_MONTH_NAME."
