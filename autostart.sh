@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 REPO_DIR="/var/home/yasar/scripts"
 
