@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 
 # monitor-hotspot.sh - Real-time hotspot device monitor using iw events
 # Detects connects/disconnects instantly via kernel wireless events.
