@@ -10,6 +10,8 @@ fi
 for script in "$REPO_DIR/autostart"/*.sh; do
     if [[ -f "$script" ]]; then
         chmod +x "$script"
+        # Kill any already-running instances before starting a fresh one
+        pkill -f "$script" 2>/dev/null
         # Run in background, redirect output to null, and disown to prevent blocking logout
         "$script" >/dev/null 2>&1 &
         disown
