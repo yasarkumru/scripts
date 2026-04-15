@@ -88,6 +88,7 @@ while true; do
         current=$(find_ap_interface)
         if [[ -z "$current" ]]; then
             kill "$IW_EVENT_PID" 2>/dev/null
+            pkill -P "$IW_EVENT_PID" 2>/dev/null
             wait "$IW_EVENT_PID" 2>/dev/null
             break
         fi
