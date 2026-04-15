@@ -2,7 +2,7 @@
 
 # monitor-hotspot.sh - Real-time hotspot device monitor using iw events
 # Detects connects/disconnects instantly via kernel wireless events.
-# Polls every 5 minutes when no hotspot is active, then starts monitoring.
+# Works even if the hotspot is started after this script; never misses events.
 # Usage: ./monitor-hotspot.sh [interface] (default: auto-detect)
 
 INTERFACE_ARG="$1"
@@ -57,12 +57,13 @@ resolve_ip_with_retry() {
     echo "$ip"
 }
 
-find_ap_interface() {
-    if [[ -n "$INTERFACE_ARG" ]]; then
-        ip link show "$INTERFACE_ARG" &>/dev/null && echo "$INTERFACE_ARG"
-    else
-        iw dev | awk '/Interface/{iface=$2} /type AP/{print iface}' | head -1
-    fi
+is_ap_interface() {
+    local iface="$1"
+    iw dev 2>/dev/null | awk -v i="$iface" '
+        /Interface/ { cur = $2 }
+        cur == i && /type AP/ { found = 1 }
+        END { exit !found }
+    '
 }
 
 if ! command -v iw &>/dev/null; then
@@ -70,66 +71,65 @@ if ! command -v iw &>/dev/null; then
     exit 1
 fi
 
+echo "Listening for hotspot events (hotspot does not need to be active yet)"
+
 while true; do
-    INTERFACE=$(find_ap_interface)
-
-    if [[ -z "$INTERFACE" ]]; then
-        sleep 300
-        continue
-    fi
-
-    echo "Monitoring hotspot on $INTERFACE (real-time via iw events)"
-
-    # Use coproc so we can kill iw event if the hotspot is turned off
+    # Run iw event continuously — it captures events regardless of hotspot state
     coproc IW_EVENT { iw event 2>/dev/null; }
 
-    while true; do
-        # Check every 60s (read timeout) that the hotspot is still active
-        current=$(find_ap_interface)
-        if [[ -z "$current" ]]; then
-            kill "$IW_EVENT_PID" 2>/dev/null
-            pkill -P "$IW_EVENT_PID" 2>/dev/null
-            wait "$IW_EVENT_PID" 2>/dev/null
-            break
-        fi
+    while IFS= read -r line <&"${IW_EVENT[0]}" 2>/dev/null; do
 
         # iw event format:
         #   <timestamp>: <iface>: new station <mac>
         #   <timestamp>: <iface>: del station <mac>
-        IFS= read -r -t 60 line <&"${IW_EVENT[0]}" 2>/dev/null || continue
+        if [[ "$line" =~ ^[0-9.]+:\ ([^ :]+):\ (new|del)\ station\ ([0-9a-fA-F:]{17}) ]]; then
+            event_iface="${BASH_REMATCH[1]}"
+            event_type="${BASH_REMATCH[2]}"
+            mac="${BASH_REMATCH[3]}"
 
-        if [[ "$line" =~ ${INTERFACE}:\ new\ station\ ([0-9a-fA-F:]{17}) ]]; then
-            mac="${BASH_REMATCH[1]}"
+            # If a specific interface was requested, ignore others
+            if [[ -n "$INTERFACE_ARG" && "$event_iface" != "$INTERFACE_ARG" ]]; then
+                continue
+            fi
 
-            # Give DHCP a moment to assign an IP, then retry a few times
-            ip=$(resolve_ip_with_retry "$mac")
-            hostname=$(get_hostname_for_mac "$mac" "$ip")
+            # Only handle interfaces currently in AP (hotspot) mode
+            is_ap_interface "$event_iface" || continue
 
-            detail="MAC: $mac"
-            [[ -n "$ip" ]]       && detail+="\nIP: $ip"
+            INTERFACE="$event_iface"
 
-            title="Device connected"
-            [[ -n "$hostname" ]] && title="$hostname connected"
+            if [[ "$event_type" == "new" ]]; then
+                # Give DHCP a moment to assign an IP, then retry a few times
+                ip=$(resolve_ip_with_retry "$mac")
+                hostname=$(get_hostname_for_mac "$mac" "$ip")
 
-            notify "$title" "$detail" "network-wireless-connected-100"
+                detail="MAC: $mac"
+                [[ -n "$ip" ]]       && detail+="\nIP: $ip"
 
-        elif [[ "$line" =~ ${INTERFACE}:\ del\ station\ ([0-9a-fA-F:]{17}) ]]; then
-            mac="${BASH_REMATCH[1]}"
+                title="Device connected"
+                [[ -n "$hostname" ]] && title="$hostname connected"
 
-            # IP is likely gone from ARP by now; lean on lease file
-            ip=$(get_ip_for_mac "$mac")
-            hostname=$(get_hostname_for_mac "$mac" "$ip")
+                notify "$title" "$detail" "network-wireless-connected-100"
 
-            detail="MAC: $mac"
-            [[ -n "$ip" ]]       && detail+="\nIP: $ip"
+            else
+                # IP is likely gone from ARP by now; lean on what we have
+                ip=$(get_ip_for_mac "$mac")
+                hostname=$(get_hostname_for_mac "$mac" "$ip")
 
-            title="Device disconnected"
-            [[ -n "$hostname" ]] && title="$hostname disconnected"
+                detail="MAC: $mac"
+                [[ -n "$ip" ]]       && detail+="\nIP: $ip"
 
-            notify "$title" "$detail" "network-wireless-disconnected"
+                title="Device disconnected"
+                [[ -n "$hostname" ]] && title="$hostname disconnected"
+
+                notify "$title" "$detail" "network-wireless-disconnected"
+            fi
         fi
+
     done
 
-    # Hotspot went away; poll until it comes back
-    sleep 300
+    # iw event exited unexpectedly — restart after a brief pause
+    kill "$IW_EVENT_PID" 2>/dev/null
+    pkill -P "$IW_EVENT_PID" 2>/dev/null
+    wait "$IW_EVENT_PID" 2>/dev/null
+    sleep 5
 done
