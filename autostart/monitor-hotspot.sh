@@ -80,9 +80,9 @@ while true; do
     while IFS= read -r line <&"${IW_EVENT[0]}" 2>/dev/null; do
 
         # iw event format:
-        #   <timestamp>: <iface>: new station <mac>
-        #   <timestamp>: <iface>: del station <mac>
-        if [[ "$line" =~ ^[0-9.]+:\ ([^ :]+):\ (new|del)\ station\ ([0-9a-fA-F:]{17}) ]]; then
+        #   <iface>: new station <mac>
+        #   <iface>: del station <mac>
+        if [[ "$line" =~ ^([a-zA-Z0-9_-]+):\ (new|del)\ station\ ([0-9a-fA-F:]{17}) ]]; then
             event_iface="${BASH_REMATCH[1]}"
             event_type="${BASH_REMATCH[2]}"
             mac="${BASH_REMATCH[3]}"
