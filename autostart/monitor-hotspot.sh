@@ -73,10 +73,14 @@ fi
 
 echo "Listening for hotspot events (hotspot does not need to be active yet)"
 
-# Debounce: track last event type+time per MAC to suppress duplicate events
-# within a short window (e.g. WPA handshake fires multiple new/del station events)
+# Debounce: suppress duplicate same-type events for the same MAC within this window
 declare -A LAST_EVENT_TIME
 DEBOUNCE_SECONDS=3
+
+# Pending disconnect notifications: mac -> PID of delayed background job
+declare -A PENDING_DISCONNECT
+# Delay before firing a disconnect notification; cancelled if device reconnects
+DISCONNECT_DELAY=2
 
 while true; do
     # Run iw event continuously — it captures events regardless of hotspot state
@@ -112,6 +116,13 @@ while true; do
             INTERFACE="$event_iface"
 
             if [[ "$event_type" == "new" ]]; then
+                # Cancel any pending disconnect notification for this MAC —
+                # it was a brief drop during reassociation, not a real disconnect
+                if [[ -n "${PENDING_DISCONNECT[$mac]}" ]]; then
+                    kill "${PENDING_DISCONNECT[$mac]}" 2>/dev/null
+                    unset "PENDING_DISCONNECT[$mac]"
+                fi
+
                 # Give DHCP a moment to assign an IP, then retry a few times
                 ip=$(resolve_ip_with_retry "$mac")
                 hostname=$(get_hostname_for_mac "$mac" "$ip")
@@ -125,17 +136,25 @@ while true; do
                 notify "$title" "$detail" "network-wireless-connected-100"
 
             else
-                # IP is likely gone from ARP by now; lean on what we have
-                ip=$(get_ip_for_mac "$mac")
-                hostname=$(get_hostname_for_mac "$mac" "$ip")
+                # Delay the disconnect notification; a reconnect within
+                # DISCONNECT_DELAY seconds will cancel it (reassociation race)
+                captured_iface="$event_iface"
+                captured_mac="$mac"
+                (
+                    sleep "$DISCONNECT_DELAY"
+                    INTERFACE="$captured_iface"
+                    ip=$(get_ip_for_mac "$captured_mac")
+                    hostname=$(get_hostname_for_mac "$captured_mac" "$ip")
 
-                detail="MAC: $mac"
-                [[ -n "$ip" ]]       && detail+="\nIP: $ip"
+                    detail="MAC: $captured_mac"
+                    [[ -n "$ip" ]]       && detail+="\nIP: $ip"
 
-                title="Device disconnected"
-                [[ -n "$hostname" ]] && title="$hostname disconnected"
+                    title="Device disconnected"
+                    [[ -n "$hostname" ]] && title="$hostname disconnected"
 
-                notify "$title" "$detail" "network-wireless-disconnected"
+                    notify "$title" "$detail" "network-wireless-disconnected"
+                ) &
+                PENDING_DISCONNECT[$mac]=$!
             fi
         fi
 
