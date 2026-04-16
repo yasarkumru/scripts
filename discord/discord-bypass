@@ -1,0 +1,17 @@
+#!/bin/bash
+# 1. Kill any existing spoofdpi instances to prevent errors
+pkill -f "spoofdpi"
+
+# 2. Start spoofdpi in the background with your working config
+# If this fails, provide full path: ~/.spoofdpi/bin/spoofdpi
+sudo spoofdpi --dns-mode https --https-fake-count 1 --https-split-mode sni &
+SPOOF_PID=$!
+
+# 3. Wait for spoofdpi to bind to port 8080
+while ! ss -tlnp | grep -q ':8080'; do sleep 0.1; done
+
+# 4. Start Vesktop forcing the proxy settings (overrides system defaults)
+flatpak run --env=http_proxy=http://127.0.0.1:8080 --env=https_proxy=http://127.0.0.1:8080 dev.vencord.Vesktop
+
+# 5. When Vesktop closes, kill the spoofdpi process
+kill $SPOOF_PID
