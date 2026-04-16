@@ -73,6 +73,11 @@ fi
 
 echo "Listening for hotspot events (hotspot does not need to be active yet)"
 
+# Debounce: track last event type+time per MAC to suppress duplicate events
+# within a short window (e.g. WPA handshake fires multiple new/del station events)
+declare -A LAST_EVENT_TIME
+DEBOUNCE_SECONDS=3
+
 while true; do
     # Run iw event continuously — it captures events regardless of hotspot state
     coproc IW_EVENT { iw event 2>/dev/null; }
@@ -86,6 +91,15 @@ while true; do
             event_iface="${BASH_REMATCH[1]}"
             event_type="${BASH_REMATCH[2]}"
             mac="${BASH_REMATCH[3]}"
+
+            # Debounce: skip if same event type for this MAC fired recently
+            now=$(date +%s)
+            key="${mac}_${event_type}"
+            last_time="${LAST_EVENT_TIME[$key]:-0}"
+            if (( now - last_time < DEBOUNCE_SECONDS )); then
+                continue
+            fi
+            LAST_EVENT_TIME[$key]="$now"
 
             # If a specific interface was requested, ignore others
             if [[ -n "$INTERFACE_ARG" && "$event_iface" != "$INTERFACE_ARG" ]]; then
