@@ -35,11 +35,7 @@ add_mac() {
 remove_mac() {
     local tmp
     tmp=$(mktemp)
-    if grep -vxF "$1" "$MACS_FILE" > "$tmp" 2>/dev/null; then
-        mv "$tmp" "$MACS_FILE"
-    else
-        rm -f "$tmp"
-    fi
+    grep -vxF "$1" "$MACS_FILE" > "$tmp" 2>/dev/null; mv "$tmp" "$MACS_FILE"
     wc -l < "$MACS_FILE" > "$COUNT_FILE"
 }
 
@@ -230,12 +226,8 @@ while true; do
 
                     # Remove from tracking before notification
                     local_tmp=$(mktemp)
-                    if grep -vxF "$captured_mac" "$captured_macs_file" \
-                            > "$local_tmp" 2>/dev/null; then
-                        mv "$local_tmp" "$captured_macs_file"
-                    else
-                        rm -f "$local_tmp"
-                    fi
+                    grep -vxF "$captured_mac" "$captured_macs_file" \
+                        > "$local_tmp" 2>/dev/null; mv "$local_tmp" "$captured_macs_file"
                     wc -l < "$captured_macs_file" > "$captured_count_file"
 
                     INTERFACE="$captured_iface"
