@@ -15,10 +15,45 @@ import os
 import signal
 import sys
 
+import ctypes
+import ctypes.util
+
 import dbus
 import dbus.mainloop.glib
 import dbus.service
-from gi.repository import GLib
+
+# GLib main loop via ctypes (avoids the python3-gobject / gi dependency)
+_libglib = ctypes.CDLL(ctypes.util.find_library("glib-2.0"))
+_libglib.g_main_loop_new.restype = ctypes.c_void_p
+_libglib.g_main_loop_new.argtypes = [ctypes.c_void_p, ctypes.c_int]
+_libglib.g_main_loop_run.argtypes = [ctypes.c_void_p]
+_libglib.g_main_loop_quit.argtypes = [ctypes.c_void_p]
+_libglib.g_timeout_add.restype = ctypes.c_uint
+_libglib.g_timeout_add.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_void_p]
+
+_GSourceFunc = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)  # gboolean (*)(gpointer)
+_kept_callbacks: list = []  # prevent GC of ctypes function pointers
+
+
+def _glib_timeout_add(interval_ms: int, callback) -> None:
+    """Register a repeating GLib timeout; callback() must return True to continue."""
+    c_cb = _GSourceFunc(lambda _userdata: int(bool(callback())))
+    _kept_callbacks.append(c_cb)
+    _libglib.g_timeout_add(ctypes.c_uint(interval_ms), c_cb, None)
+
+
+_main_loop_ptr: int | None = None
+
+
+def _glib_run() -> None:
+    global _main_loop_ptr
+    _main_loop_ptr = _libglib.g_main_loop_new(None, 0)
+    _libglib.g_main_loop_run(_main_loop_ptr)
+
+
+def _glib_quit() -> None:
+    if _main_loop_ptr is not None:
+        _libglib.g_main_loop_quit(_main_loop_ptr)
 
 # ── Icon generation ───────────────────────────────────────────────────────────
 
@@ -117,7 +152,7 @@ class HotspotTray(dbus.service.Object):
         except dbus.DBusException as exc:
             print(f"[hotspot-tray] SNW register failed: {exc}", file=sys.stderr)
 
-        GLib.timeout_add(500, self._poll)
+        _glib_timeout_add(500, self._poll)
 
     # ── Polling ───────────────────────────────────────────────────────────────
 
@@ -255,10 +290,9 @@ def main() -> None:
     tray = HotspotTray(bus, sys.argv[1])
     tray.register()
 
-    loop = GLib.MainLoop()
-    signal.signal(signal.SIGTERM, lambda *_: loop.quit())
-    signal.signal(signal.SIGINT, lambda *_: loop.quit())
-    loop.run()
+    signal.signal(signal.SIGTERM, lambda *_: _glib_quit())
+    signal.signal(signal.SIGINT, lambda *_: _glib_quit())
+    _glib_run()
 
 
 if __name__ == "__main__":
