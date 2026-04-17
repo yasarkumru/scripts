@@ -113,7 +113,7 @@ is_ap_interface() {
 start_tray() {
     local tray_script="$SCRIPT_DIR/hotspot-tray.py"
     [[ -f "$tray_script" ]] || return
-    python3 "$tray_script" "$COUNT_FILE" 2>/tmp/hotspot-tray.log &
+    /usr/bin/python3 "$tray_script" "$COUNT_FILE" 2>/tmp/hotspot-tray.log &
     local pid=$!
     echo "$pid" > "$TRAY_PID_FILE"
     disown "$pid"
