@@ -3,9 +3,47 @@
 # monitor-hotspot.sh - Real-time hotspot device monitor using iw events
 # Detects connects/disconnects instantly via kernel wireless events.
 # Works even if the hotspot is started after this script; never misses events.
+# Shows number of connected devices in a KDE system tray icon (hotspot-tray.py).
 # Usage: ./monitor-hotspot.sh [interface] (default: auto-detect)
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INTERFACE_ARG="$1"
+
+# ── Shared state files (cleaned up on exit) ───────────────────────────────────
+
+COUNT_FILE=$(mktemp /tmp/hotspot-count-XXXXXX.txt)
+MACS_FILE=$(mktemp /tmp/hotspot-macs-XXXXXX.txt)
+TRAY_PID_FILE=$(mktemp /tmp/hotspot-tray-pid-XXXXXX.txt)
+echo 0 > "$COUNT_FILE"
+
+cleanup() {
+    local tray_pid
+    tray_pid=$(cat "$TRAY_PID_FILE" 2>/dev/null)
+    [[ -n "$tray_pid" ]] && kill "$tray_pid" 2>/dev/null
+    rm -f "$COUNT_FILE" "$MACS_FILE" "$TRAY_PID_FILE"
+}
+trap cleanup EXIT
+trap 'cleanup; exit' TERM INT
+
+# ── MAC tracking helpers ──────────────────────────────────────────────────────
+
+add_mac() {
+    grep -qxF "$1" "$MACS_FILE" 2>/dev/null || echo "$1" >> "$MACS_FILE"
+    wc -l < "$MACS_FILE" > "$COUNT_FILE"
+}
+
+remove_mac() {
+    local tmp
+    tmp=$(mktemp)
+    if grep -vxF "$1" "$MACS_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$MACS_FILE"
+    else
+        rm -f "$tmp"
+    fi
+    wc -l < "$MACS_FILE" > "$COUNT_FILE"
+}
+
+# ── Notification helper ───────────────────────────────────────────────────────
 
 notify() {
     local summary="$1"
@@ -17,6 +55,8 @@ notify() {
         --hint=string:desktop-entry:kcm_networkmanagement \
         "$summary" "$body"
 }
+
+# ── IP / hostname resolution ──────────────────────────────────────────────────
 
 get_ip_for_mac() {
     local mac="$1"
@@ -57,6 +97,8 @@ resolve_ip_with_retry() {
     echo "$ip"
 }
 
+# ── Interface helpers ─────────────────────────────────────────────────────────
+
 is_ap_interface() {
     local iface="$1"
     iw dev 2>/dev/null | awk -v i="$iface" '
@@ -66,12 +108,49 @@ is_ap_interface() {
     '
 }
 
+# ── Tray icon ─────────────────────────────────────────────────────────────────
+
+start_tray() {
+    local tray_script="$SCRIPT_DIR/hotspot-tray.py"
+    [[ -f "$tray_script" ]] || return
+    python3 "$tray_script" "$COUNT_FILE" &
+    local pid=$!
+    echo "$pid" > "$TRAY_PID_FILE"
+    disown "$pid"
+}
+
+ensure_tray_running() {
+    local pid
+    pid=$(cat "$TRAY_PID_FILE" 2>/dev/null)
+    if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+        start_tray
+    fi
+}
+
+# ── Initial scan for already-connected stations ───────────────────────────────
+
+initial_scan() {
+    : > "$MACS_FILE"
+    local iface mac
+    for iface in $(iw dev 2>/dev/null | awk '/Interface/{print $2}'); do
+        is_ap_interface "$iface" || continue
+        while IFS= read -r mac; do
+            [[ -n "$mac" ]] && add_mac "$mac"
+        done < <(iw dev "$iface" station dump 2>/dev/null | awk '/^Station/{print $2}')
+    done
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+
 if ! command -v iw &>/dev/null; then
     echo "Error: 'iw' not found. Install iw (iw package)."
     exit 1
 fi
 
 echo "Listening for hotspot events (hotspot does not need to be active yet)"
+
+start_tray
+initial_scan
 
 # Debounce: suppress duplicate same-type events for the same MAC within this window
 declare -A LAST_EVENT_TIME
@@ -83,6 +162,8 @@ declare -A PENDING_DISCONNECT
 DISCONNECT_DELAY=2
 
 while true; do
+    ensure_tray_running
+
     # Run iw event continuously — it captures events regardless of hotspot state
     coproc IW_EVENT { iw event 2>/dev/null; }
 
@@ -123,6 +204,8 @@ while true; do
                     unset "PENDING_DISCONNECT[$mac]"
                 fi
 
+                add_mac "$mac"
+
                 # Give DHCP a moment to assign an IP, then retry a few times
                 ip=$(resolve_ip_with_retry "$mac")
                 hostname=$(get_hostname_for_mac "$mac" "$ip")
@@ -140,8 +223,21 @@ while true; do
                 # DISCONNECT_DELAY seconds will cancel it (reassociation race)
                 captured_iface="$event_iface"
                 captured_mac="$mac"
+                captured_macs_file="$MACS_FILE"
+                captured_count_file="$COUNT_FILE"
                 (
                     sleep "$DISCONNECT_DELAY"
+
+                    # Remove from tracking before notification
+                    local_tmp=$(mktemp)
+                    if grep -vxF "$captured_mac" "$captured_macs_file" \
+                            > "$local_tmp" 2>/dev/null; then
+                        mv "$local_tmp" "$captured_macs_file"
+                    else
+                        rm -f "$local_tmp"
+                    fi
+                    wc -l < "$captured_macs_file" > "$captured_count_file"
+
                     INTERFACE="$captured_iface"
                     ip=$(get_ip_for_mac "$captured_mac")
                     hostname=$(get_hostname_for_mac "$captured_mac" "$ip")
@@ -160,9 +256,10 @@ while true; do
 
     done
 
-    # iw event exited unexpectedly — restart after a brief pause
+    # iw event exited unexpectedly — resync state and restart
     kill "$IW_EVENT_PID" 2>/dev/null
     pkill -P "$IW_EVENT_PID" 2>/dev/null
     wait "$IW_EVENT_PID" 2>/dev/null
+    initial_scan
     sleep 5
 done
