@@ -8,7 +8,7 @@ ps aux --no-headers | awk -v limit="$LIMIT" '
     cmd = $11
     gsub(/^.*\//, "", cmd)   # strip path
     gsub(/:$/, "", cmd)       # strip trailing colon
-    if ($6 > 0) mem[cmd] += $6
+    if ($6 > 0) { mem[cmd] += $6; total += $6 }
 }
 END {
     n = 0
@@ -38,5 +38,11 @@ END {
             shown++
         }
     }
+    printf "%-30s %10s\n", "------------------------------", "----------"
+    tmb = total / 1024
+    if (tmb >= 1024)
+        printf "%-30s %7.1f GiB\n", "TOTAL (all processes)", tmb/1024
+    else
+        printf "%-30s %7.0f MiB\n", "TOTAL (all processes)", tmb
 }
 '
