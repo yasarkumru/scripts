@@ -24,8 +24,8 @@ if [ -d "$TARGET_DIR" ]; then
     exit 0
 fi
 
-# Check if there are any files/folders to move (excluding the history directory)
-FILES_TO_MOVE=$(find "$DOWNLOADS_DIR" -maxdepth 1 -not -path "$DOWNLOADS_DIR" -not -path "$HISTORY_DIR" -print -quit)
+# Check if there are any files/folders to move (excluding the history directory and .directory)
+FILES_TO_MOVE=$(find "$DOWNLOADS_DIR" -maxdepth 1 -not -path "$DOWNLOADS_DIR" -not -path "$HISTORY_DIR" -not -name ".directory" -print -quit)
 
 if [ -n "$FILES_TO_MOVE" ]; then
     # Create the target directory for the previous month
@@ -35,6 +35,7 @@ if [ -n "$FILES_TO_MOVE" ]; then
     find "$DOWNLOADS_DIR" -maxdepth 1 \
         -not -path "$DOWNLOADS_DIR" \
         -not -path "$HISTORY_DIR" \
+        -not -name ".directory" \
         -exec mv {} "$TARGET_DIR/" \;
 
     # Send a desktop notification that stays in the notification center
