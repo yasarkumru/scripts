@@ -13,6 +13,44 @@ ps aux --no-headers | awk -v limit="$LIMIT" '
     gsub(/^.*\//, "", cmd)   # strip path
     gsub(/:$/, "", cmd)       # strip trailing colon
 
+    # Resolve /proc/self/exe (and similar) to the real binary
+    if ($11 ~ /^\/proc\//) {
+        "readlink /proc/" $2 "/exe" | getline realexe
+        close("readlink /proc/" $2 "/exe")
+        if (realexe != "") {
+            gsub(/^.*\//, "", realexe)
+            cmd = realexe
+        } else {
+            # Sandboxed process: extract app name from --user-data-dir Flatpak app ID
+            for (i = 12; i <= NF; i++) {
+                if ($i ~ /^--user-data-dir=/) {
+                    udd = substr($i, 17)
+                    if (match(udd, /\/app\/[^.]+\.([^.\/]+)/, arr))
+                        cmd = tolower(arr[1])
+                    else {
+                        gsub(/^.*\//, "", udd)
+                        cmd = tolower(udd)
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    # For bwrap (Flatpak sandbox), resolve to the wrapped command
+    if (cmd == "bwrap") {
+        for (i = 12; i <= NF; i++) {
+            if ($i == "--" && i+1 <= NF) {
+                app = $(i+1)
+                gsub(/^.*\//, "", app)
+                gsub(/^start-/, "", app)
+                gsub(/-flatpak$/, "", app)
+                cmd = app
+                break
+            }
+        }
+    }
+
     # For java, resolve by known patterns in the command line
     if (cmd == "java") {
         if ($0 ~ /[Ss]onar[Ll]int/) cmd = "sonarlint"
