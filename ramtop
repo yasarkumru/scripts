@@ -1,13 +1,44 @@
 #!/usr/bin/env bash
 # Shows RAM usage grouped by application name, sorted by usage
 
-LIMIT=${1:-15}
+if [[ "$1" == "-all" ]]; then
+    LIMIT=999999
+else
+    LIMIT=${1:-15}
+fi
 
 ps aux --no-headers | awk -v limit="$LIMIT" '
 {
     cmd = $11
     gsub(/^.*\//, "", cmd)   # strip path
     gsub(/:$/, "", cmd)       # strip trailing colon
+
+    # For java, resolve by known patterns in the command line
+    if (cmd == "java") {
+        if ($0 ~ /[Ss]onar[Ll]int/) cmd = "sonarlint"
+        else if ($0 ~ /-Dmaven/) cmd = "maven-server"
+        else if ($11 ~ /idea-IU/) cmd = "intellij-jvm"
+    }
+
+    # For python interpreters, resolve the actual script name
+    if (cmd ~ /^python/) {
+        for (i = 12; i <= NF; i++) {
+            if ($i !~ /^-/) {
+                script = $i
+                if (match(script, /\/app\/share\/[^\/]+\//)) {
+                    appname = substr(script, RSTART + 11)
+                    sub(/\/.*/, "", appname)
+                    cmd = appname
+                } else {
+                    gsub(/^.*\//, "", script)
+                    gsub(/\.py$/, "", script)
+                    cmd = script
+                }
+                break
+            }
+        }
+    }
+
     if ($6 > 0) { mem[cmd] += $6; total += $6 }
 }
 END {
