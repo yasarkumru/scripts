@@ -212,7 +212,7 @@ while true; do
                 title="Device connected"
                 [[ -n "$hostname" ]] && title="$hostname connected"
 
-                notify "$title" "$detail" "network-wireless-connected-100"
+                # notify "$title" "$detail" "network-wireless-connected-100"
 
             else
                 # Delay the disconnect notification; a reconnect within
@@ -240,7 +240,7 @@ while true; do
                     title="Device disconnected"
                     [[ -n "$hostname" ]] && title="$hostname disconnected"
 
-                    notify "$title" "$detail" "network-wireless-disconnected"
+                    # notify "$title" "$detail" "network-wireless-disconnected"
                 ) &
                 PENDING_DISCONNECT[$mac]=$!
             fi
