@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# Shows RAM usage grouped by application name, sorted by usage
+
+if [[ "$1" == "-all" ]]; then
+    LIMIT=999999
+else
+    LIMIT=${1:-15}
+fi
+
+ps aux --no-headers | awk -v limit="$LIMIT" '
+{
+    cmd = $11
+    gsub(/^.*\//, "", cmd)   # strip path
+    gsub(/:$/, "", cmd)       # strip trailing colon
+
+    # Resolve /proc/self/exe (and similar) to the real binary
+    if ($11 ~ /^\/proc\//) {
+        "readlink /proc/" $2 "/exe" | getline realexe
+        close("readlink /proc/" $2 "/exe")
+        if (realexe != "") {
+            gsub(/^.*\//, "", realexe)
+            cmd = realexe
+        } else {
+            # Sandboxed process: extract app name from --user-data-dir Flatpak app ID
+            for (i = 12; i <= NF; i++) {
+                if ($i ~ /^--user-data-dir=/) {
+                    udd = substr($i, 17)
+                    if (match(udd, /\/app\/[^.]+\.([^.\/]+)/, arr))
+                        cmd = tolower(arr[1])
+                    else {
+                        gsub(/^.*\//, "", udd)
+                        cmd = tolower(udd)
+                    }
+                    break
+                }
+            }
+        }
+    }
+
+    # For bwrap (Flatpak sandbox), resolve to the wrapped command
+    if (cmd == "bwrap") {
+        for (i = 12; i <= NF; i++) {
+            if ($i == "--" && i+1 <= NF) {
+                app = $(i+1)
+                gsub(/^.*\//, "", app)
+                gsub(/^start-/, "", app)
+                gsub(/-flatpak$/, "", app)
+                cmd = app
+                break
+            }
+        }
+    }
+
+    # For java, resolve by known patterns in the command line
+    if (cmd == "java") {
+        if ($0 ~ /[Ss]onar[Ll]int/) cmd = "sonarlint"
+        else if ($0 ~ /-Dmaven/) cmd = "maven-server"
+        else if ($11 ~ /idea-IU/) cmd = "intellij-jvm"
+    }
+
+    # For python interpreters, resolve the actual script name
+    if (cmd ~ /^python/) {
+        for (i = 12; i <= NF; i++) {
+            if ($i !~ /^-/) {
+                script = $i
+                if (match(script, /\/app\/share\/[^\/]+\//)) {
+                    appname = substr(script, RSTART + 11)
+                    sub(/\/.*/, "", appname)
+                    cmd = appname
+                } else {
+                    gsub(/^.*\//, "", script)
+                    gsub(/\.py$/, "", script)
+                    cmd = script
+                }
+                break
+            }
+        }
+    }
+
+    if ($6 > 0) { mem[cmd] += $6; total += $6 }
+}
+END {
+    n = 0
+    for (c in mem) {
+        vals[n] = mem[c]
+        names[n] = c
+        n++
+    }
+    # bubble sort descending
+    for (i = 0; i < n-1; i++)
+        for (j = i+1; j < n; j++)
+            if (vals[j] > vals[i]) {
+                tmp = vals[i]; vals[i] = vals[j]; vals[j] = tmp
+                tmp = names[i]; names[i] = names[j]; names[j] = tmp
+            }
+
+    printf "%-30s %10s\n", "APPLICATION", "RAM"
+    printf "%-30s %10s\n", "------------------------------", "----------"
+    shown = 0
+    for (i = 0; i < n && shown < limit; i++) {
+        mb = vals[i] / 1024
+        if (mb >= 1) {
+            if (mb >= 1024)
+                printf "%-30s %7.1f GiB\n", names[i], mb/1024
+            else
+                printf "%-30s %7.0f MiB\n", names[i], mb
+            shown++
+        }
+    }
+    printf "%-30s %10s\n", "------------------------------", "----------"
+    tmb = total / 1024
+    if (tmb >= 1024)
+        printf "%-30s %7.1f GiB\n", "TOTAL (all processes)", tmb/1024
+    else
+        printf "%-30s %7.0f MiB\n", "TOTAL (all processes)", tmb
+}
+'
