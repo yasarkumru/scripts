@@ -2,6 +2,9 @@
 # Logs processes exceeding threshold network usage to ~/nethogs.log.
 # Uses ss (via cntlm port) if cntlm is running, nethogs otherwise.
 
+source /etc/os-release 2>/dev/null
+[[ "$ID" != "aurora" ]] && exit 0
+
 THRESHOLD_KB=1024
 LOG_FILE="$HOME/nethogs.log"
 INTERVAL=1
