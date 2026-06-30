@@ -44,8 +44,10 @@ run_ss_mode() {
                 up_kb=$(( ds / INTERVAL / 1024 ))
                 down_kb=$(( dr / INTERVAL / 1024 ))
                 if (( up_kb > THRESHOLD_KB || down_kb > THRESHOLD_KB )); then
-                    printf '%s\t%s\tup: %d KB/s\tdown: %d KB/s\n' \
-                        "$(date '+%Y-%m-%d %H:%M:%S')" "$name" "$up_kb" "$down_kb" \
+                    up_mb=$(awk "BEGIN {printf \"%.2f\", $ds / $INTERVAL / 1048576}")
+                    down_mb=$(awk "BEGIN {printf \"%.2f\", $dr / $INTERVAL / 1048576}")
+                    printf '%s\t%s\tup: %s MB/s\tdown: %s MB/s\n' \
+                        "$(date '+%Y-%m-%d %H:%M:%S')" "$name" "$up_mb" "$down_mb" \
                         >> "$LOG_FILE"
                 fi
             done
@@ -74,8 +76,10 @@ run_nethogs_mode() {
             recv_kb=${recv%%.*}
             [[ "$sent_kb" =~ ^[0-9]+$ && "$recv_kb" =~ ^[0-9]+$ ]] || continue
             if (( sent_kb > THRESHOLD_KB || recv_kb > THRESHOLD_KB )); then
-                printf '%s\t%s\tup: %s KB/s\tdown: %s KB/s\n' \
-                    "$(date '+%Y-%m-%d %H:%M:%S')" "$program" "$sent" "$recv" \
+                up_mb=$(awk "BEGIN {printf \"%.2f\", $sent / 1024}")
+                down_mb=$(awk "BEGIN {printf \"%.2f\", $recv / 1024}")
+                printf '%s\t%s\tup: %s MB/s\tdown: %s MB/s\n' \
+                    "$(date '+%Y-%m-%d %H:%M:%S')" "$program" "$up_mb" "$down_mb" \
                     >> "$LOG_FILE"
             fi
         done
