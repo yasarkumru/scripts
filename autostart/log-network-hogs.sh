@@ -14,6 +14,14 @@ rm -f "$LOG_FILE"
 
 run_ss_mode() {
     declare -A prev_sent prev_recv
+    local prev_hs_rx=0 prev_hs_tx=0
+
+    get_hotspot_iface() {
+        ip -4 addr show | awk '
+            /^[0-9]+: / { match($0, /^[0-9]+: ([^:@]+)/, m); iface = m[1] }
+            /inet 10\.42\.0\.1\// { print iface; exit }
+        '
+    }
 
     get_app_bytes() {
         ss -tipe state established dst :"$CNTLM_PORT" 2>/dev/null | awk '
@@ -62,6 +70,34 @@ run_ss_mode() {
             prev_recv[$key]=${curr_recv[$key]}
             unset "curr_sent[$key]" "curr_recv[$key]"
         done
+
+        # Hotspot (phone) tracking
+        local hs_iface hs_rx hs_tx
+        hs_iface=$(get_hotspot_iface)
+        if [[ -n "$hs_iface" ]]; then
+            hs_rx=$(< /sys/class/net/$hs_iface/statistics/rx_bytes)
+            hs_tx=$(< /sys/class/net/$hs_iface/statistics/tx_bytes)
+            if [[ $prev_hs_rx -gt 0 ]]; then
+                local drx=$(( hs_rx - prev_hs_rx ))
+                local dtx=$(( hs_tx - prev_hs_tx ))
+                (( drx < 0 )) && drx=0
+                (( dtx < 0 )) && dtx=0
+                local hs_up_kb=$(( drx / INTERVAL / 1024 ))
+                local hs_down_kb=$(( dtx / INTERVAL / 1024 ))
+                if (( hs_up_kb > THRESHOLD_KB || hs_down_kb > THRESHOLD_KB )); then
+                    up_mb=$(awk "BEGIN {printf \"%.2f\", $drx / $INTERVAL / 1048576}")
+                    down_mb=$(awk "BEGIN {printf \"%.2f\", $dtx / $INTERVAL / 1048576}")
+                    printf '%s\tphone (hotspot)\tup: %s MB/s\tdown: %s MB/s\n' \
+                        "$(date '+%Y-%m-%d %H:%M:%S')" "$up_mb" "$down_mb" \
+                        >> "$LOG_FILE"
+                fi
+            fi
+            prev_hs_rx=$hs_rx
+            prev_hs_tx=$hs_tx
+        else
+            prev_hs_rx=0
+            prev_hs_tx=0
+        fi
 
         sleep "$INTERVAL"
     done
