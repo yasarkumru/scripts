@@ -2,8 +2,6 @@
 # Logs processes exceeding threshold network usage to ~/nethogs.log.
 # Uses ss (via cntlm port) if cntlm is running, nethogs otherwise.
 
-source /etc/os-release 2>/dev/null
-[[ "$ID" != "aurora" ]] && exit 0
 
 THRESHOLD_KB=1024
 LOG_FILE="$HOME/nethogs.log"
@@ -109,7 +107,7 @@ run_nethogs_mode() {
     [[ ! -x "$NETHOGS" ]] && exit 0
 
     while true; do
-        "$NETHOGS" -t -d "$INTERVAL" 2>/dev/null | while IFS=$'\t' read -r program sent recv; do
+        sudo "$NETHOGS" -t -d "$INTERVAL" 2>/dev/null | while IFS=$'\t' read -r program sent recv; do
             [[ "$program" == "Refreshing:" || -z "$program" || "$program" == Unknown* ]] && continue
             sent_kb=${sent%%.*}
             recv_kb=${recv%%.*}
