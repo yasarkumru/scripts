@@ -1,0 +1,72 @@
+#!/bin/bash
+# speedhack — slow down or speed up a game's perception of time (Cheat Engine
+# speedhack equivalent for Linux). Works on native Linux games by intercepting
+# clock_gettime/gettimeofday via LD_PRELOAD.
+#
+#   speedhack <command> [args...]   launch a program under the hack
+#   speedhack <multiplier>          change the speed of the running program
+#
+# Multiplier is a float: 0.25 = 4x slow motion, 1 = normal, 2 = double speed.
+#
+# Steam launch options example:
+#   /home/yasar/scripts/speedhack mangohud %command%
+#
+# Library source/build: ~/Binaries/libspeedhack (github.com/evg-zhabotinsky/libspeedhack)
+
+set -u
+
+SRC_DIR="$HOME/Binaries/libspeedhack"
+LIB="$SRC_DIR/lib/libspeedhack.so"
+PIPE=/tmp/speedhack_pipe
+
+notify() {
+	notify-send \
+		--icon=applications-games \
+		-a "speedhack" \
+		--hint=string:desktop-entry:speedhack \
+		"$1" \
+		"${2:-}"
+}
+
+usage() {
+	echo "usage: speedhack <command> [args...]   # launch under the hack" >&2
+	echo "       speedhack <multiplier>          # 0.25 = 4x slow motion, 1 = normal" >&2
+	exit 2
+}
+
+[ $# -ge 1 ] || usage
+
+# A bare number means "set the speed of the already-running program".
+if [ $# -eq 1 ] && [[ $1 =~ ^[0-9]*\.?[0-9]+$ ]]; then
+	if [ ! -p "$PIPE" ]; then
+		notify "Not running" "No hooked program found"
+		echo "speedhack: $PIPE does not exist — is a hooked program running?" >&2
+		exit 1
+	fi
+	# Writing to a FIFO blocks until something reads it, so don't hang forever.
+	if ! timeout 1 bash -c "echo $1 > $PIPE"; then
+		notify "Not running" "Nothing is listening on the pipe"
+		echo "speedhack: nothing listening on $PIPE" >&2
+		exit 1
+	fi
+	notify "Game speed" "${1}x"
+	exit 0
+fi
+
+# Otherwise: launch mode.
+if [ ! -f "$LIB" ]; then
+	if [ -f "$SRC_DIR/Makefile" ]; then
+		echo "speedhack: building $LIB ..." >&2
+		make -C "$SRC_DIR" native >&2 || exit 1
+	else
+		echo "speedhack: $LIB missing and no source in $SRC_DIR" >&2
+		echo "  git clone https://github.com/evg-zhabotinsky/libspeedhack.git $SRC_DIR && make -C $SRC_DIR" >&2
+		exit 1
+	fi
+fi
+
+# Recreate the control pipe for this run.
+rm -f "$PIPE" /tmp/speedhack_log
+mkfifo "$PIPE"
+
+LD_PRELOAD="$LIB${LD_PRELOAD:+:$LD_PRELOAD}" exec "$@"
