@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+# Lists Claude Code sessions and deletes the ones you pick, along with every
+# artifact tied to them: the transcript, its sidecar dir (subagent transcripts),
+# file-history snapshots and session-env. Never touches memory/ dirs.
+#
+#   claude-delete            pick sessions to delete (fzf multi-select, Tab to mark)
+#   claude-delete -l         list only
+#   claude-delete -c         limit to sessions from the current directory
+#   claude-delete -n         dry run: show what would be deleted
+#   claude-delete -y         skip the confirmation prompt
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+CLAUDE = os.path.expanduser("~/.claude")
+PROJECTS = os.path.join(CLAUDE, "projects")
+KEYED_DIRS = [os.path.join(CLAUDE, d) for d in ("file-history", "session-env")]
+PROTECTED = {"memory"}
+
+if sys.stdout.isatty():
+    BOLD, DIM, RED, YELLOW, GREEN, RESET = (
+        "\033[1m", "\033[2m", "\033[31m", "\033[33m", "\033[32m", "\033[0m"
+    )
+else:
+    BOLD = DIM = RED = YELLOW = GREEN = RESET = ""
+
+
+def live_session_ids():
+    """Session ids with a running process, from ~/.claude/sessions/<pid>.json."""
+    live = set()
+    d = os.path.join(CLAUDE, "sessions")
+    for name in os.listdir(d) if os.path.isdir(d) else []:
+        try:
+            with open(os.path.join(d, name)) as fh:
+                info = json.load(fh)
+            os.kill(info["pid"], 0)          # still alive?
+            live.add(info["sessionId"])
+        except (OSError, ValueError, KeyError):
+            continue
+    return live
+
+
+def dir_size(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(root, f))
+            except OSError:
+                pass
+    return total
+
+
+def read_meta(path):
+    """Pull the display title and first prompt out of a transcript."""
+    custom = ai = prompt = None
+    with open(path, errors="ignore") as fh:
+        for line in fh:
+            if "title" in line and ('"custom-title"' in line or '"ai-title"' in line):
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("type") == "custom-title":
+                    custom = rec.get("customTitle")
+                elif rec.get("type") == "ai-title":
+                    ai = rec.get("aiTitle")
+            elif prompt is None and '"type":"user"' in line:
+                try:
+                    content = json.loads(line)["message"]["content"]
+                except (ValueError, KeyError, TypeError):
+                    continue
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") for c in content if isinstance(c, dict)
+                    )
+                if isinstance(content, str) and content.strip():
+                    prompt = " ".join(content.split())[:120]
+    return custom, ai, prompt
+
+
+def collect(cwd_only):
+    """One entry per session: id, project dir, title, mtime, total bytes."""
+    want = os.getcwd().replace("/", "-") if cwd_only else None
+    live = live_session_ids()
+    sessions = []
+    for project in sorted(os.listdir(PROJECTS)) if os.path.isdir(PROJECTS) else []:
+        pdir = os.path.join(PROJECTS, project)
+        if not os.path.isdir(pdir) or (want and project != want):
+            continue
+        for name in sorted(os.listdir(pdir)):
+            if not name.endswith(".jsonl"):
+                continue
+            sid = name[:-6]
+            path = os.path.join(pdir, name)
+            custom, ai, prompt = read_meta(path)
+            targets = [path]
+            for extra in [os.path.join(pdir, sid)] + [
+                os.path.join(d, sid) for d in KEYED_DIRS
+            ]:
+                if os.path.isdir(extra):
+                    targets.append(extra)
+            size = os.path.getsize(path) + sum(
+                dir_size(t) for t in targets[1:]
+            )
+            sessions.append({
+                "id": sid,
+                "project": project,
+                "title": custom or ai or prompt or "(no title)",
+                "renamed": bool(custom),
+                "live": sid in live,
+                "mtime": os.path.getmtime(path),
+                "size": size,
+                "targets": targets,
+            })
+    sessions.sort(key=lambda s: s["mtime"], reverse=True)
+    return sessions
+
+
+def human(n):
+    for unit in ("B", "K", "M", "G"):
+        if n < 1024 or unit == "G":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+
+
+def row(s, width=52):
+    date = time.strftime("%Y-%m-%d", time.localtime(s["mtime"]))
+    mark = "*" if s["renamed"] else " "
+    title = s["title"][:width]
+    flag = " [running]" if s["live"] else ""
+    return f"{date}  {human(s['size']):>7}  {mark}{title:<{width}}{flag}  {DIM}{s['project']}{RESET}"
+
+
+def pick(sessions):
+    """fzf multi-select when available, numbered prompt otherwise."""
+    choosable = [s for s in sessions if not s["live"]]
+    if not choosable:
+        return []
+    if shutil.which("fzf"):
+        menu = "\n".join(f"{i}\t{row(s)}" for i, s in enumerate(choosable))
+        try:
+            out = subprocess.run(
+                ["fzf", "--multi", "--ansi", "--with-nth=2..", "--delimiter=\t",
+                 "--height=80%", "--reverse",
+                 "--header=Tab to mark, Enter to confirm, Esc to cancel. * = renamed"],
+                input=menu, capture_output=True, text=True,
+            ).stdout
+        except OSError:
+            out = ""
+        return [choosable[int(l.split("\t")[0])] for l in out.splitlines() if l.strip()]
+
+    for i, s in enumerate(choosable, 1):
+        print(f"{i:>3}. {row(s)}")
+    reply = input("\nNumbers to delete (e.g. 1 3 5, or 'all'): ").strip()
+    if reply == "all":
+        return choosable
+    picked = []
+    for tok in reply.replace(",", " ").split():
+        if tok.isdigit() and 1 <= int(tok) <= len(choosable):
+            picked.append(choosable[int(tok) - 1])
+    return picked
+
+
+def main():
+    ap = argparse.ArgumentParser(add_help=True, description=__doc__)
+    ap.add_argument("-l", "--list", action="store_true", help="list sessions, delete nothing")
+    ap.add_argument("-c", "--cwd", action="store_true", help="only sessions started in this directory")
+    ap.add_argument("-n", "--dry-run", action="store_true", help="show what would be deleted")
+    ap.add_argument("-y", "--yes", action="store_true", help="skip the confirmation prompt")
+    args = ap.parse_args()
+
+    sessions = collect(args.cwd)
+    if not sessions:
+        print("No sessions found.")
+        return
+
+    if args.list:
+        for s in sessions:
+            print(row(s))
+        total = sum(s["size"] for s in sessions)
+        print(f"\n{len(sessions)} sessions, {human(total)}  ({DIM}* = renamed{RESET})")
+        return
+
+    picked = pick(sessions)
+    if not picked:
+        print("Nothing selected.")
+        return
+
+    print(f"\n{BOLD}Will delete {len(picked)} session(s):{RESET}")
+    for s in picked:
+        print("  " + row(s))
+        for t in s["targets"][1:]:
+            print(f"      {DIM}+ {t.replace(os.path.expanduser('~'), '~')}{RESET}")
+
+    freed = sum(s["size"] for s in picked)
+    renamed = [s for s in picked if s["renamed"]]
+    if renamed:
+        print(f"\n{YELLOW}Note: {len(renamed)} of these you renamed by hand.{RESET}")
+
+    if args.dry_run:
+        print(f"\n{DIM}Dry run — nothing deleted. Would free {human(freed)}.{RESET}")
+        return
+
+    if not args.yes:
+        if input(f"\nDelete these and free {human(freed)}? [y/N] ").strip().lower() != "y":
+            print("Cancelled.")
+            return
+
+    for s in picked:
+        for t in s["targets"]:
+            if os.path.basename(t) in PROTECTED:      # never a memory/ dir
+                continue
+            try:
+                shutil.rmtree(t) if os.path.isdir(t) else os.remove(t)
+            except OSError as e:
+                print(f"{RED}failed: {t}: {e}{RESET}", file=sys.stderr)
+
+    # Drop project dirs left with nothing in them.
+    for project in os.listdir(PROJECTS):
+        pdir = os.path.join(PROJECTS, project)
+        if os.path.isdir(pdir) and not os.listdir(pdir):
+            os.rmdir(pdir)
+
+    print(f"{GREEN}Deleted {len(picked)} session(s), freed {human(freed)}.{RESET}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+        sys.exit(130)
