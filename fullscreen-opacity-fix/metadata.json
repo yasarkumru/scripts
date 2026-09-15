@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "KWin/Script",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "User"
+            }
+        ],
+        "Description": "Restore full opacity when a window goes fullscreen (e.g. YouTube), restore previous opacity afterwards",
+        "Icon": "view-fullscreen",
+        "Id": "fullscreen-opacity-fix",
+        "License": "GPL-3.0-or-later",
+        "Name": "Fullscreen Opacity Fix"
+    },
+    "X-Plasma-API": "javascript"
+}
