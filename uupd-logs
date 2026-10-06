@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from signal import SIG_DFL, SIGPIPE, signal
 
 # Let SIGPIPE kill us quietly (e.g. `uupd-logs --all | less` + quit).
@@ -28,6 +29,53 @@ def get_logs(since):
         capture_output=True, text=True,
     )
     return (p.stdout or "") + (p.stderr or "")
+
+
+def get_run_times(since):
+    """(start_epoch, end_epoch|None) per run, pairing Starting->Finished in order."""
+    p = subprocess.run(
+        ["journalctl", "-u", "uupd.service", "-u", "uupd-manual.service",
+         "--since", since, "--no-pager", "-o", "short-unix"],
+        capture_output=True, text=True,
+    )
+    starts, ends = [], []
+    for line in (p.stdout or "").splitlines():
+        parts = line.split(None, 1)
+        if not parts:
+            continue
+        try:
+            ts = float(parts[0])
+        except ValueError:
+            continue
+        if "Starting uupd" in line:
+            starts.append(ts)
+        elif "Finished uupd" in line:
+            ends.append(ts)
+    runs, ei = [], 0
+    for s in starts:
+        e = None
+        while ei < len(ends) and ends[ei] < s:
+            ei += 1
+        if ei < len(ends):
+            e = ends[ei]
+            ei += 1
+        runs.append((s, e))
+    return runs
+
+
+def fmt_dur(secs):
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{m}m {s}s" if s else f"{m}m"
+    h, m = divmod(m, 60)
+    return f"{h}h {m}m"
+
+
+def fmt_t(ts):
+    return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
 def main():
@@ -96,8 +144,20 @@ def main():
             summary.append(f"{lvl}: {msg}")
 
     print(f"=== uupd status (since {args.since}) ===\n")
+    runs = get_run_times(args.since)
+    run_i = 0
     for s in summary:
         print(s)
+        if "Finished uupd.service" in s:
+            if run_i < len(runs):
+                st, en = runs[run_i]
+                if en is not None:
+                    print(f"  └─ took {fmt_dur(en - st)} ({fmt_t(st)} → {fmt_t(en)})")
+                else:
+                    print(f"  └─ no finish in window (started {fmt_t(st)})")
+            run_i += 1
+    # Runs that started but whose Finished line was filtered out of the summary
+    # (can't happen currently, kept for safety) — nothing to do.
 
     if boxes:
         print(f"\n--- Distroboxes attempted ({len(boxes)}) ---")
