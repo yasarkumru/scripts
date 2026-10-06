@@ -11,6 +11,10 @@ import json
 import re
 import subprocess
 import sys
+from signal import SIG_DFL, SIGPIPE, signal
+
+# Let SIGPIPE kill us quietly (e.g. `uupd-logs --all | less` + quit).
+signal(SIGPIPE, SIG_DFL)
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 BOX_RE = re.compile(r"Upgrading ([A-Za-z0-9_.-]+)\.\.\.")
@@ -109,4 +113,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BrokenPipeError:
+        sys.exit(0)
