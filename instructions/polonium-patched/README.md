@@ -189,27 +189,33 @@ if (node.parent === null && node.window !== null && direction !== void 0) {
 }
 ```
 
-### 3. Nearest-edge drop zones (optional, feel improvement)
+### 3. Bottom-edge drop zone (optional, feel improvement)
 
 Stock `directionFromPoint` (top of main3.mjs) returns the KWin Direction from
-screen quadrants, which makes the bottom drop zone small. This version picks
-the NEAREST EDGE instead, so the bottom zone covers the whole bottom half:
+screen quadrants, which makes the bottom drop zone small and unpredictable.
+This version: dropping within `BOTTOM_SPLIT_ZONE` (100 px) of the **bottom
+edge** always splits horizontally (window takes the bottom half); anywhere
+else, the direction is the nearest of top/left/right edges:
 
 ```js
 function directionFromPoint(r, p) {
+  const BOTTOM_SPLIT_ZONE = 100;
   const x = p.x - r.x;
   const y = p.y - r.y;
   const dLeft = x;
   const dRight = r.width - x;
   const dTop = y;
   const dBottom = r.height - y;
-  const min = Math.min(dLeft, dRight, dTop, dBottom);
-  if (min === dBottom) return 1 /* Down */ | 4 /* Vertical */;
+  if (dBottom < BOTTOM_SPLIT_ZONE) return 1 /* Down */ | 4 /* Vertical */;
+  const min = Math.min(dLeft, dRight, dTop);
   if (min === dTop) return 4 /* Vertical */;
   if (min === dRight) return 2 /* Right */;
   return 0 /* None */;
 }
 ```
+
+Adjust `BOTTOM_SPLIT_ZONE` to taste (bigger = easier to trigger the
+horizontal split).
 
 (The patched file in `polonium-patched/` already contains all three changes.)
 

@@ -7,14 +7,18 @@ function rotateDirection(d) {
   return ret;
 }
 function directionFromPoint(r, p) {
+  // Bottom drop zone is a narrow strip: dropping within 100px of the bottom
+  // edge splits horizontally (window takes the bottom). Otherwise fall back
+  // to nearest-edge among top/left/right.
+  const BOTTOM_SPLIT_ZONE = 100;
   const x = p.x - r.x;
   const y = p.y - r.y;
   const dLeft = x;
   const dRight = r.width - x;
   const dTop = y;
   const dBottom = r.height - y;
-  const min = Math.min(dLeft, dRight, dTop, dBottom);
-  if (min === dBottom) return 1 /* Down */ | 4 /* Vertical */;
+  if (dBottom < BOTTOM_SPLIT_ZONE) return 1 /* Down */ | 4 /* Vertical */;
+  const min = Math.min(dLeft, dRight, dTop);
   if (min === dTop) return 4 /* Vertical */;
   if (min === dRight) return 2 /* Right */;
   return 0 /* None */;
