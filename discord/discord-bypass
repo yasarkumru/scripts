@@ -21,4 +21,4 @@ while ! ss -tlnp | grep -q ':8080'; do
 done
 
 # 5. Start Vesktop forcing the proxy settings (overrides system defaults)
-flatpak run --env=http_proxy=http://127.0.0.1:8080 --env=https_proxy=http://127.0.0.1:8080 dev.vencord.Vesktop
+flatpak run --env=http_proxy=http://127.0.0.1:8080 --env=https_proxy=http://127.0.0.1:8080 dev.vencord.Vesktop "$@"
