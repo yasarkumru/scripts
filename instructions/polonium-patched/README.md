@@ -48,6 +48,13 @@ kwriteconfig6 --file kwinrc --group Script-polonium --key WindowDragPolicy 0    
 kwriteconfig6 --file kwinrc --group Script-polonium --key BTreeRotateLayout false    # keep Windows-like split direction
 kwriteconfig6 --file kwinrc --group Script-polonium --key LogLevel 1                 # quiet logging (3 = debug)
 
+# Ignore list: windows fully excluded from tiling (float freely, no space reserved).
+# This is the stock Polonium default list plus "spectacle" (its capture window
+# otherwise reserves tile space and misbehaves). Comma-separated, matched
+# against window resourceClass.
+kwriteconfig6 --file kwinrc --group Script-polonium --key IgnoreWindowClasses \
+  "krunner, yakuake, kded, polkit, plasmashell, xwaylandvideobridge, spectacle"
+
 # Disable KWin edge quick-tiling so it doesn't fight Polonium
 # (top-edge maximize keeps working)
 kwriteconfig6 --file kwinrc --group Windows --key ElectricBorderTiling false
