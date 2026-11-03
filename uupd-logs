@@ -5,6 +5,7 @@
 #   uupd-logs --since "24 hours ago"
 #   uupd-logs --all              raw journal output, no filtering
 #   uupd-logs --debug            include DEBUG lines (per-package spam)
+#   uupd-logs --follow           live uupd messages, cleaned (no timestamps/JSON)
 
 import argparse
 import json
@@ -78,12 +79,81 @@ def fmt_t(ts):
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
+def clean_msg(msg):
+    """Journal message -> readable line; None for multi-line JSON blobs."""
+    if msg.startswith("{"):
+        try:
+            o = json.loads(msg)
+        except ValueError:
+            return None
+        msg = o.get("msg", "")
+    return ANSI.sub("", msg).strip() or None
+
+
+def follow():
+    """Stream uupd journal messages live, without timestamps/JSON noise."""
+    p = subprocess.Popen(
+        ["journalctl", "-u", "uupd.service", "-u", "uupd-manual.service",
+         "-f", "--no-pager", "-o", "short-unix"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        for line in p.stdout:
+            line = line.rstrip("\n")
+            parts = line.split(None, 1)
+            try:
+                float(parts[0])
+            except ValueError:
+                continue  # continuation of a multi-line entry
+            msg = parts[1] if len(parts) > 1 else ""
+            if "]: " in msg:
+                msg = msg.partition("]: ")[2]  # strip "host unit[pid]: "
+            out = clean_msg(msg)
+            if out:
+                print(out, flush=True)
+    finally:
+        p.terminate()
+        p.wait()
+
+
+def format_entry(o):
+    """One non-DEBUG journal JSON entry -> summary line."""
+    lvl = o.get("level", "")
+    msg = ANSI.sub("", o.get("msg", "")).strip()
+    title, desc, mod = o.get("title", ""), o.get("description", ""), o.get("module", "")
+    if title or desc:
+        return f"{lvl}: {title} ({desc}): {msg}"
+    if mod:
+        cli = o.get("cli", "")
+        if isinstance(cli, list):
+            cli = " ".join(cli)
+        return f"{lvl}: {mod}: {msg} [{cli}]"
+    return f"{lvl}: {msg}"
+
+
+def print_debug_line(line):
+    if line.startswith("{"):
+        try:
+            o = json.loads(line)
+            print(f"{o.get('level', '')}: {ANSI.sub('', o.get('msg', '')).strip()}")
+            return
+        except ValueError:
+            pass
+    print(line)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Readable uupd status")
     ap.add_argument("--since", default="12 hours ago")
+    ap.add_argument("-f", "--follow", action="store_true",
+                    help="live uupd messages, cleaned (no timestamps/JSON)")
     ap.add_argument("--all", action="store_true", help="raw journal output")
     ap.add_argument("--debug", action="store_true", help="include DEBUG lines")
     args = ap.parse_args()
+
+    if args.follow:
+        follow()
+        return
 
     raw = get_logs(args.since)
     if not raw.strip():
@@ -96,15 +166,7 @@ def main():
 
     if args.debug:
         for line in raw.splitlines():
-            line = line.strip()
-            if line.startswith("{"):
-                try:
-                    o = json.loads(line)
-                    print(f"{o.get('level', '')}: {ANSI.sub('', o.get('msg', '')).strip()}")
-                    continue
-                except ValueError:
-                    pass
-            print(line)
+            print_debug_line(line.strip())
         return
 
     summary = []
@@ -132,16 +194,7 @@ def main():
             if FAIL_RE.search(msg):
                 hints.append(msg)
             continue
-        title, desc, mod = o.get("title", ""), o.get("description", ""), o.get("module", "")
-        if title or desc:
-            summary.append(f"{lvl}: {title} ({desc}): {msg}")
-        elif mod:
-            cli = o.get("cli", "")
-            if isinstance(cli, list):
-                cli = " ".join(cli)
-            summary.append(f"{lvl}: {mod}: {msg} [{cli}]")
-        else:
-            summary.append(f"{lvl}: {msg}")
+        summary.append(format_entry(o))
 
     print(f"=== uupd status (since {args.since}) ===\n")
     runs = get_run_times(args.since)
@@ -169,11 +222,13 @@ def main():
         for h in dict.fromkeys(hints):
             print(f"  {h}")
 
-    print("\nTip: uupd-logs --all | less  (raw),  uupd-logs --debug | less  (per-package detail)")
+    print("\nTip: uupd-logs --follow (live),  uupd-logs --all | less  (raw),  uupd-logs --debug | less  (per-package detail)")
 
 
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        sys.exit(130)
     except BrokenPipeError:
         sys.exit(0)
