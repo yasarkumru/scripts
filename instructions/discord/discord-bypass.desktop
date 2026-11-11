@@ -2,7 +2,7 @@
 Type=Application
 Name=Discord (Bypass)
 Comment=Runs Discord with SpoofDPI
-Exec=/var/home/yasar/scripts/discord/discord-bypass
+Exec=/var/home/yasar/scripts/instructions/discord/discord-bypass
 Icon=dev.vencord.Vesktop
 Categories=Network;Chat;
 StartupNotify=true

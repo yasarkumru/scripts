@@ -21,6 +21,13 @@ signal(SIGPIPE, SIG_DFL)
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 BOX_RE = re.compile(r"Upgrading ([A-Za-z0-9_.-]+)\.\.\.")
 FAIL_RE = re.compile(r"fatal:|Error: Fetching|Failed to download|CONNECT tunnel failed", re.I)
+CMD_NOISE_LEVELS = {"", "INFO", "NOTICE", "DEBUG"}
+
+
+def is_cmd_output_noise(o):
+    """uupd 'Command output' spam (per-chunk fetch lines); errors stay visible."""
+    return (o.get("msg") == "Command output"
+            and o.get("level", "").upper() in CMD_NOISE_LEVELS)
 
 
 def get_logs(since):
@@ -86,6 +93,8 @@ def clean_msg(msg):
             o = json.loads(msg)
         except ValueError:
             return None
+        if is_cmd_output_noise(o):
+            return None
         msg = o.get("msg", "")
     return ANSI.sub("", msg).strip() or None
 
@@ -117,9 +126,11 @@ def follow():
 
 
 def format_entry(o):
-    """One non-DEBUG journal JSON entry -> summary line."""
+    """One non-DEBUG journal JSON entry -> summary line (None = drop)."""
     lvl = o.get("level", "")
     msg = ANSI.sub("", o.get("msg", "")).strip()
+    if is_cmd_output_noise(o):
+        return None
     title, desc, mod = o.get("title", ""), o.get("description", ""), o.get("module", "")
     if title or desc:
         return f"{lvl}: {title} ({desc}): {msg}"
@@ -194,7 +205,9 @@ def main():
             if FAIL_RE.search(msg):
                 hints.append(msg)
             continue
-        summary.append(format_entry(o))
+        entry = format_entry(o)
+        if entry:
+            summary.append(entry)
 
     print(f"=== uupd status (since {args.since}) ===\n")
     runs = get_run_times(args.since)
