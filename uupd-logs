@@ -1,74 +1,105 @@
 #!/usr/bin/env python3
-# uupd-logs - readable uupd status for the last 12 hours
+# uupd-logs - readable uupd status
 #
-#   uupd-logs                    summary (default, last 12h)
+#   uupd-logs                     summary of the last 12h
 #   uupd-logs --since "24 hours ago"
-#   uupd-logs --all              raw journal output, no filtering
-#   uupd-logs --debug            include DEBUG lines (per-package spam)
-#   uupd-logs --follow           live uupd messages, cleaned (no timestamps/JSON)
+#   uupd-logs --debug             every line, JSON condensed (per-package detail)
+#   uupd-logs --all               raw journal output, no filtering
 
 import argparse
 import json
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime
 from signal import SIG_DFL, SIGPIPE, signal
 
-# Let SIGPIPE kill us quietly (e.g. `uupd-logs --all | less` + quit).
+# Let SIGPIPE kill us quietly (e.g. `uupd-logs --debug | less` + quit).
 signal(SIGPIPE, SIG_DFL)
 
+UNITS = ["-u", "uupd.service", "-u", "uupd-manual.service"]
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 BOX_RE = re.compile(r"Upgrading ([A-Za-z0-9_.-]+)\.\.\.")
 FAIL_RE = re.compile(r"fatal:|Error: Fetching|Failed to download|CONNECT tunnel failed", re.I)
-CMD_NOISE_LEVELS = {"", "INFO", "NOTICE", "DEBUG"}
+QUIET_LEVELS = {"", "INFO", "NOTICE", "DEBUG"}
+
+# Per-distrobox result detection, from the package manager's own output.
+UPGRADED_RES = [
+    re.compile(r"^(\d+) upgraded, "),                    # apt
+    re.compile(r"^\s*Upgrading:\s+(\d+) packages?"),    # dnf5
+    re.compile(r"^Packages? \((\d+)\)"),                # pacman
+    re.compile(r"^\(\d+/(\d+)\) (Upgrading|Replacing) "), # apk
+]
+UPTODATE_RE = re.compile(
+    r"^(Nothing to do\.|there is nothing to do|0 upgraded, |OK: .* in \d+ packages)", re.I)
 
 
-def is_cmd_output_noise(o):
-    """uupd 'Command output' spam (per-chunk fetch lines); errors stay visible."""
-    return (o.get("msg") == "Command output"
-            and o.get("level", "").upper() in CMD_NOISE_LEVELS)
+def strip(s):
+    return ANSI.sub("", s).strip()
 
 
-def get_logs(since):
-    p = subprocess.run(
-        ["journalctl", "-u", "uupd.service", "-u", "uupd-manual.service",
-         "--since", since, "--no-pager", "-o", "cat"],
-        capture_output=True, text=True,
-    )
-    return (p.stdout or "") + (p.stderr or "")
+# --------------------------------------------------------------------------- input
+
+def journal(since):
+    """Yield (epoch_seconds, message) for every uupd journal entry."""
+    cmd = ["journalctl", *UNITS, "--no-pager", "-o", "json", "--since", since,
+           "--output-fields=MESSAGE,__REALTIME_TIMESTAMP"]
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+    try:
+        for line in p.stdout:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            msg = e.get("MESSAGE") or ""
+            if isinstance(msg, list):  # non-UTF-8 payload comes as a byte array
+                msg = bytes(msg).decode("utf-8", "replace")
+            yield int(e.get("__REALTIME_TIMESTAMP", 0)) / 1e6, msg
+    finally:
+        p.terminate()
+        p.wait()
 
 
-def get_run_times(since):
-    """(start_epoch, end_epoch|None) per run, pairing Starting->Finished in order."""
-    p = subprocess.run(
-        ["journalctl", "-u", "uupd.service", "-u", "uupd-manual.service",
-         "--since", since, "--no-pager", "-o", "short-unix"],
-        capture_output=True, text=True,
-    )
-    starts, ends = [], []
-    for line in (p.stdout or "").splitlines():
-        parts = line.split(None, 1)
-        if not parts:
-            continue
-        try:
-            ts = float(parts[0])
-        except ValueError:
-            continue
-        if "Starting uupd" in line:
-            starts.append(ts)
-        elif "Finished uupd" in line:
-            ends.append(ts)
-    runs, ei = [], 0
-    for s in starts:
-        e = None
-        while ei < len(ends) and ends[ei] < s:
-            ei += 1
-        if ei < len(ends):
-            e = ends[ei]
-            ei += 1
-        runs.append((s, e))
-    return runs
+def parse(msg):
+    """uupd emits one JSON object per line; anything else is plain text (None)."""
+    if not msg.startswith("{"):
+        return None
+    try:
+        o = json.loads(msg)
+    except ValueError:
+        return None
+    return o if isinstance(o, dict) else None
+
+
+# -------------------------------------------------------------------------- render
+
+def is_cmd_output(o):
+    """Per-line stdout of a module's command. Chatty; errors are never considered chatter."""
+    return o.get("msg") == "Command output" and o.get("level", "").upper() in QUIET_LEVELS
+
+
+def render(o):
+    """One uupd JSON event -> one readable line."""
+    lvl = o.get("level", "")
+    msg = strip(o.get("msg", ""))
+    out = o.get("output")
+    out = strip(out) if isinstance(out, str) else ""
+    mod = o.get("module", "")
+
+    if o.get("msg") == "Command output":
+        return f"{lvl}: {mod}: {out}" if mod else f"{lvl}: {out}"
+    if o.get("title") or o.get("description"):
+        detail = out if out and out != msg else msg
+        return f"{lvl}: {o.get('title', '')} ({o.get('description', '')}): {detail}"
+    if mod:
+        if out and out != msg:
+            return f"{lvl}: {mod}: {msg}: {out}"
+        cli = o.get("cli")
+        if isinstance(cli, list):
+            cli = " ".join(cli)
+        return f"{lvl}: {mod}: {msg}" + (f" [{cli}]" if cli else "")
+    return f"{lvl}: {msg}"
 
 
 def fmt_dur(secs):
@@ -86,156 +117,131 @@ def fmt_t(ts):
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
-def clean_msg(msg):
-    """Journal message -> readable line; None for multi-line JSON blobs."""
-    if msg.startswith("{"):
-        try:
-            o = json.loads(msg)
-        except ValueError:
-            return None
-        if is_cmd_output_noise(o):
-            return None
-        msg = o.get("msg", "")
-    return ANSI.sub("", msg).strip() or None
+def fmt_dt(ts):
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def follow():
-    """Stream uupd journal messages live, without timestamps/JSON noise."""
-    p = subprocess.Popen(
-        ["journalctl", "-u", "uupd.service", "-u", "uupd-manual.service",
-         "-f", "--no-pager", "-o", "short-unix"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    try:
-        for line in p.stdout:
-            line = line.rstrip("\n")
-            parts = line.split(None, 1)
-            try:
-                float(parts[0])
-            except ValueError:
-                continue  # continuation of a multi-line entry
-            msg = parts[1] if len(parts) > 1 else ""
-            if "]: " in msg:
-                msg = msg.partition("]: ")[2]  # strip "host unit[pid]: "
-            out = clean_msg(msg)
-            if out:
-                print(out, flush=True)
-    finally:
-        p.terminate()
-        p.wait()
+# --------------------------------------------------------------------------- modes
+
+def do_all(since):
+    subprocess.run(["journalctl", *UNITS, "--since", since, "--no-pager", "-o", "cat"])
 
 
-def format_entry(o):
-    """One non-DEBUG journal JSON entry -> summary line (None = drop)."""
-    lvl = o.get("level", "")
-    msg = ANSI.sub("", o.get("msg", "")).strip()
-    if is_cmd_output_noise(o):
-        return None
-    title, desc, mod = o.get("title", ""), o.get("description", ""), o.get("module", "")
-    if title or desc:
-        return f"{lvl}: {title} ({desc}): {msg}"
-    if mod:
-        cli = o.get("cli", "")
-        if isinstance(cli, list):
-            cli = " ".join(cli)
-        return f"{lvl}: {mod}: {msg} [{cli}]"
-    return f"{lvl}: {msg}"
+def do_debug(since):
+    any_ = False
+    for _, msg in journal(since):
+        any_ = True
+        o = parse(msg)
+        print(render(o) if o is not None else msg)
+    if not any_:
+        print(f"No uupd logs since {since}.")
 
 
-def print_debug_line(line):
-    if line.startswith("{"):
-        try:
-            o = json.loads(line)
-            print(f"{o.get('level', '')}: {ANSI.sub('', o.get('msg', '')).strip()}")
-            return
-        except ValueError:
-            pass
-    print(line)
+def uupd_running():
+    """True while uupd (oneshot -> 'activating') or uupd-manual is running."""
+    p = subprocess.run(["systemctl", "is-active", "uupd.service", "uupd-manual.service"],
+                       capture_output=True, text=True)
+    return any(s in ("active", "activating") for s in p.stdout.split())
+
+
+def fmt_box(b):
+    n = b["upgraded"]
+    if b.get("running"):
+        res = "updating..." + (f" ({n} package{'s' if n != 1 else ''})" if n else "")
+    elif n:
+        res = f"updated, {n} package{'s' if n != 1 else ''}"
+    elif b["uptodate"] or n == 0:
+        res = "up to date"
+    else:
+        res = "done"
+    if b["failed"]:
+        res += " (errors, see hints)"
+    return f"    - {b['name']}: {res}"
+
+
+def do_summary(since):
+    lines, hints = [], []      # lines: str, or a dict for a distrobox (filled in as output arrives)
+    box = None
+    started = None
+
+    for ts, msg in journal(since):
+        o = parse(msg)
+        if o is None:
+            if "Starting uupd" in msg:
+                started = ts
+                lines.append(f"[{fmt_dt(ts)}] {msg}")
+            elif "Finished uupd" in msg:
+                lines.append(f"[{fmt_dt(ts)}] {msg}")
+                if started is not None:
+                    lines.append(f"  └─ took {fmt_dur(ts - started)} ({fmt_t(started)} → {fmt_t(ts)})")
+                started = None
+            elif "Deactivated successfully" in msg or "Failed with result" in msg:
+                lines.append(f"[{fmt_dt(ts)}] {msg}")
+            continue
+
+        out = o.get("output")
+        text = strip(out if is_cmd_output(o) and isinstance(out, str) else o.get("msg", ""))
+        if FAIL_RE.search(text):
+            hints.append(text)
+            if box is not None:
+                box["failed"] = True
+
+        if is_cmd_output(o):
+            if o.get("module") == "distrobox":
+                if m := BOX_RE.search(text):
+                    box = {"name": m.group(1), "upgraded": None, "uptodate": False, "failed": False}
+                    lines.append(box)
+                elif box is not None:
+                    for r in UPGRADED_RES:
+                        if m := r.search(text):
+                            box["upgraded"] = int(m.group(1))
+                    if UPTODATE_RE.search(text):
+                        box["uptodate"] = True
+            continue
+        if o.get("module") != "distrobox" or o.get("status") == "finished":
+            box = None
+        if o.get("level") == "DEBUG":
+            continue
+        lines.append(render(o))
+
+    if not lines and not hints:
+        print(f"No uupd logs since {since}.")
+        return
+
+    running = uupd_running()
+    if running and box is not None:
+        box["running"] = True  # its result lines may not have arrived yet
+
+    print(f"=== uupd status (since {since}) ===\n")
+    for ln in lines:
+        print(fmt_box(ln) if isinstance(ln, dict) else ln)
+    if running:
+        since_s = f", started {fmt_t(started)}, {fmt_dur(time.time() - started)} ago" if started else ""
+        print(f"  └─ RUNNING NOW{since_s}")
+    elif started is not None:
+        print(f"  └─ no finish in window (started {fmt_t(started)})")
+
+    if hints:
+        print("\n--- Failure hints ---")
+        for h in dict.fromkeys(hints):
+            print(f"  {h}")
+
+    print("\nTip: uupd-logs --debug | less (per-package detail),  uupd-logs --all | less (raw)")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Readable uupd status")
     ap.add_argument("--since", default="12 hours ago")
-    ap.add_argument("-f", "--follow", action="store_true",
-                    help="live uupd messages, cleaned (no timestamps/JSON)")
     ap.add_argument("--all", action="store_true", help="raw journal output")
     ap.add_argument("--debug", action="store_true", help="include DEBUG lines")
     args = ap.parse_args()
 
-    if args.follow:
-        follow()
-        return
-
-    raw = get_logs(args.since)
-    if not raw.strip():
-        print(f"No uupd logs since {args.since}.")
-        return
-
     if args.all:
-        print(raw, end="" if raw.endswith("\n") else "\n")
-        return
-
-    if args.debug:
-        for line in raw.splitlines():
-            print_debug_line(line.strip())
-        return
-
-    summary = []
-    boxes = set()
-    hints = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        if not line.startswith("{"):
-            if ("Starting uupd" in line or "Finished uupd" in line
-                    or "Deactivated successfully" in line):
-                summary.append(line)
-            continue
-        try:
-            o = json.loads(line)
-        except ValueError:
-            continue
-        lvl = o.get("level", "")
-        msg = ANSI.sub("", o.get("msg", "")).strip()
-        if lvl == "DEBUG":
-            m = BOX_RE.search(msg)
-            if m:
-                boxes.add(m.group(1))
-            if FAIL_RE.search(msg):
-                hints.append(msg)
-            continue
-        entry = format_entry(o)
-        if entry:
-            summary.append(entry)
-
-    print(f"=== uupd status (since {args.since}) ===\n")
-    runs = get_run_times(args.since)
-    run_i = 0
-    for s in summary:
-        print(s)
-        if "Finished uupd.service" in s:
-            if run_i < len(runs):
-                st, en = runs[run_i]
-                if en is not None:
-                    print(f"  └─ took {fmt_dur(en - st)} ({fmt_t(st)} → {fmt_t(en)})")
-                else:
-                    print(f"  └─ no finish in window (started {fmt_t(st)})")
-            run_i += 1
-    # Runs that started but whose Finished line was filtered out of the summary
-    # (can't happen currently, kept for safety) — nothing to do.
-
-    if boxes:
-        print(f"\n--- Distroboxes attempted ({len(boxes)}) ---")
-        for b in sorted(boxes):
-            print(f"  - {b}")
-
-    if hints:
-        print("\n--- Failure hints (from DEBUG) ---")
-        for h in dict.fromkeys(hints):
-            print(f"  {h}")
-
-    print("\nTip: uupd-logs --follow (live),  uupd-logs --all | less  (raw),  uupd-logs --debug | less  (per-package detail)")
+        do_all(args.since)
+    elif args.debug:
+        do_debug(args.since)
+    else:
+        do_summary(args.since)
 
 
 if __name__ == "__main__":
